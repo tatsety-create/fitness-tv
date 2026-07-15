@@ -90,6 +90,10 @@
   .reco{margin-top:34px;max-width:60ch;font-size:18px;line-height:1.6;color:var(--white);
     background:var(--panel);border:1px solid var(--line);border-radius:18px;padding:24px 30px}
   .err{color:var(--amber);font-weight:600;margin-top:24px;font-size:17px;max-width:48ch;line-height:1.5}
+  .presence-wrap{margin-top:30px;width:340px}
+  .presence-track{height:10px;border-radius:99px;background:rgba(255,255,255,.15);overflow:hidden}
+  .presence-bar{height:100%;width:0%;background:#E8404F;border-radius:99px;transition:width .12s linear}
+  .presence-txt{margin-top:12px;font-size:16px;font-weight:700;color:var(--white)}
   @media (max-width:900px){
     .side{display:none}
     .big{right:50%;transform:translateX(50%)}
@@ -134,6 +138,10 @@
     <p class="sub">Встань перед экраном в полный рост на расстоянии 2–3 метра.
       Камера построит скелет твоих движений и оценит приседания, наклоны и чувство баланса.</p>
     <button class="btn" id="go">Начать тест</button>
+    <div class="presence-wrap" id="presenceWrap" style="display:none">
+      <div class="presence-track"><div class="presence-bar" id="presenceBar"></div></div>
+      <div class="presence-txt" id="presenceTxt"></div>
+    </div>
     <div class="err" id="errBox" style="display:none"></div>
   </div>
 
@@ -333,6 +341,46 @@ function demoLoop(ts){
 function startDemo(){stopDemo();demoT0=0;demoRAF=requestAnimationFrame(demoLoop)}
 function stopDemo(){if(demoRAF){cancelAnimationFrame(demoRAF);demoRAF=null}}
 
+/* ---------------- presence-triggered start ---------------- */
+let awaitingStart=false, presenceStart=null, presenceLast=0;
+const DWELL_MS=5000, DWELL_GRACE=700; // 5 сек непрерывно в зоне, допуск на мигание кадра 0.7 сек
+function setPresenceUI(frac,secLeft){
+  const wrap=$('presenceWrap');
+  if(frac<=0){wrap.style.display='none';return}
+  wrap.style.display='block';
+  $('presenceBar').style.width=(frac*100)+'%';
+  $('presenceTxt').textContent = secLeft>0 ? `Стой на месте — старт через ${secLeft}…` : 'Начинаем!';
+}
+function checkPresence(lm){
+  const now=performance.now();
+  let ok=false;
+  if(vis(lm,[11,12,23,24])){
+    const hipX=(lm[23].x+lm[24].x)/2;
+    const torso=Math.abs(((lm[23].y+lm[24].y)/2)-((lm[11].y+lm[12].y)/2));
+    ok = hipX>ZONE.x0 && hipX<ZONE.x1 && torso>ZONE.minTorso;
+  }
+  if(ok){
+    if(!presenceStart)presenceStart=now;
+    presenceLast=now;
+  }else if(presenceStart && now-presenceLast>DWELL_GRACE){
+    presenceStart=null;
+  }
+  if(!presenceStart){setPresenceUI(0,0);return}
+  const elapsed=now-presenceStart;
+  setPresenceUI(Math.min(1,elapsed/DWELL_MS), Math.ceil(Math.max(0,DWELL_MS-elapsed)/1000));
+  if(elapsed>=DWELL_MS){presenceStart=null;beginFromPresence();}
+}
+function armPresence(){
+  awaitingStart=true;presenceStart=null;presenceLast=0;
+  setPresenceUI(0,0);
+}
+function beginFromPresence(){
+  awaitingStart=false;
+  setPresenceUI(0,0);
+  $('ovStart').classList.add('hide');
+  startExercise(0);
+}
+
 /* ---------------- flow ---------------- */
 const TIME_LIMIT=60;      // сек на упражнение, потом авто-переход
 let runTimer=null, runDeadline=0;
@@ -398,7 +446,8 @@ function showResults(){
     resetAll();
     $('ovDone').classList.add('hide');
     $('ovStart').classList.remove('hide');
-  },60000);
+    armPresence();
+  },30000);
 }
 let camStarted=false, idleTimer=null;
 function resetAll(){
@@ -431,23 +480,28 @@ pose.onResults(res=>{
       else if(exIdx===0)stepSquat(lm);
       else if(exIdx===1)stepBend(lm);
       else stepBalance(lm,performance.now());
+    }else if(awaitingStart){
+      checkPresence(lm);
     }
   }else{
     tracking=false;lastT=0;
     $('track').textContent='встань в кадр';$('track').className='pill';
     if(phase==='run')hint('Не вижу тебя — встань в центр кадра',true);
+    else if(awaitingStart&&presenceStart&&performance.now()-presenceLast>DWELL_GRACE){
+      presenceStart=null;setPresenceUI(0,0);
+    }
   }
 });
 
 $('go').onclick=async()=>{
-  if(camStarted){$('ovStart').classList.add('hide');startExercise(0);return}
+  if(camStarted){awaitingStart=false;setPresenceUI(0,0);$('ovStart').classList.add('hide');startExercise(0);return}
   $('go').textContent='Загрузка…';
   try{
     const camera=new Camera(video,{onFrame:async()=>{await pose.send({image:video})},width:1280,height:720});
     await camera.start();
     camStarted=true;
-    $('ovStart').classList.add('hide');
-    startExercise(0);
+    $('go').textContent='Начать тест';
+    armPresence();
   }catch(e){
     $('errBox').style.display='block';
     $('errBox').textContent='Не удалось включить камеру. Разреши доступ к камере в браузере (значок в адресной строке) и обнови страницу. '+e.message;
