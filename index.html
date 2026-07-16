@@ -346,10 +346,11 @@ let awaitingStart=false, presenceStart=null, presenceLast=0;
 const DWELL_MS=5000, DWELL_GRACE=700; // 5 сек непрерывно в зоне, допуск на мигание кадра 0.7 сек
 function setPresenceUI(frac,secLeft){
   const wrap=$('presenceWrap');
-  if(frac<=0){wrap.style.display='none';return}
   wrap.style.display='block';
   $('presenceBar').style.width=(frac*100)+'%';
-  $('presenceTxt').textContent = secLeft>0 ? `Стой на месте — старт через ${secLeft}…` : 'Начинаем!';
+  $('presenceTxt').textContent = frac<=0
+    ? 'Встань в зону на разметке, чтобы начать'
+    : (secLeft>0 ? `Стой на месте — старт через ${secLeft}…` : 'Начинаем!');
 }
 function checkPresence(lm){
   const now=performance.now();
@@ -481,14 +482,16 @@ pose.onResults(res=>{
       else if(exIdx===1)stepBend(lm);
       else stepBalance(lm,performance.now());
     }else if(awaitingStart){
+      drawZone();
       checkPresence(lm);
     }
   }else{
     tracking=false;lastT=0;
     $('track').textContent='встань в кадр';$('track').className='pill';
     if(phase==='run')hint('Не вижу тебя — встань в центр кадра',true);
-    else if(awaitingStart&&presenceStart&&performance.now()-presenceLast>DWELL_GRACE){
-      presenceStart=null;setPresenceUI(0,0);
+    else if(awaitingStart){
+      drawZone();
+      if(presenceStart&&performance.now()-presenceLast>DWELL_GRACE){presenceStart=null;setPresenceUI(0,0);}
     }
   }
 });
@@ -500,7 +503,7 @@ $('go').onclick=async()=>{
     const camera=new Camera(video,{onFrame:async()=>{await pose.send({image:video})},width:1280,height:720});
     await camera.start();
     camStarted=true;
-    $('go').textContent='Начать тест';
+    $('go').textContent='Начать сразу (без ожидания)';
     armPresence();
   }catch(e){
     $('errBox').style.display='block';
