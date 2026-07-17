@@ -209,20 +209,33 @@ function ema(prev,x,k=0.35){return prev==null?x:prev+(x-prev)*k}
 function vis(lm,ids){return ids.every(i=>lm[i]&&lm[i].visibility>0.5)}
 
 /* ---------------- active zone (защита от толпы) ---------------- */
-const ZONE={x0:0.28,x1:0.72,minTorso:0.16}; // центр кадра + человек достаточно близко
+const ZONE={x0:0.32,x1:0.68,minTorso:0.18}; // узкая центральная зона; человек должен быть в ней целиком
+// весь корпус в зоне: оба плеча и оба бедра между линиями (защита от людей сбоку)
+function bodyInZone(lm){
+  const xs=[lm[11].x,lm[12].x,lm[23].x,lm[24].x];
+  return Math.min(...xs)>ZONE.x0 && Math.max(...xs)<ZONE.x1;
+}
 function inZone(lm){
-  const hipX=(lm[23].x+lm[24].x)/2;
   const torso=Math.abs(((lm[23].y+lm[24].y)/2)-((lm[11].y+lm[12].y)/2));
-  if(hipX<ZONE.x0||hipX>ZONE.x1){hint('Встань в центр зоны — на разметку',true);return false}
+  if(!bodyInZone(lm)){hint('Встань в центр зоны — на разметку',true);return false}
   if(torso<ZONE.minTorso){hint('Подойди ближе к экрану',true);return false}
   return true;
 }
 function drawZone(){
   const w=canvas.width,h=canvas.height;
   ctx.save();
-  ctx.strokeStyle='rgba(255,255,255,.45)';ctx.lineWidth=3;ctx.setLineDash([18,14]);
-  ctx.beginPath();ctx.moveTo(w*ZONE.x0,h*0.06);ctx.lineTo(w*ZONE.x0,h*0.96);ctx.stroke();
-  ctx.beginPath();ctx.moveTo(w*ZONE.x1,h*0.06);ctx.lineTo(w*ZONE.x1,h*0.96);ctx.stroke();
+  // затемняем всё вне зоны, чтобы граница читалась однозначно
+  ctx.fillStyle='rgba(20,30,48,.5)';
+  ctx.fillRect(0,0,w*ZONE.x0,h);
+  ctx.fillRect(w*ZONE.x1,0,w-w*ZONE.x1,h);
+  // яркие сплошные линии + пунктирная сердцевина
+  ctx.lineCap='round';
+  ctx.strokeStyle='rgba(232,64,79,.95)';ctx.lineWidth=8;ctx.setLineDash([]);
+  ctx.beginPath();ctx.moveTo(w*ZONE.x0,h*0.04);ctx.lineTo(w*ZONE.x0,h*0.98);ctx.stroke();
+  ctx.beginPath();ctx.moveTo(w*ZONE.x1,h*0.04);ctx.lineTo(w*ZONE.x1,h*0.98);ctx.stroke();
+  ctx.strokeStyle='rgba(255,255,255,.9)';ctx.lineWidth=3;ctx.setLineDash([16,12]);
+  ctx.beginPath();ctx.moveTo(w*ZONE.x0,h*0.04);ctx.lineTo(w*ZONE.x0,h*0.98);ctx.stroke();
+  ctx.beginPath();ctx.moveTo(w*ZONE.x1,h*0.04);ctx.lineTo(w*ZONE.x1,h*0.98);ctx.stroke();
   ctx.restore();
 }
 
@@ -356,9 +369,8 @@ function checkPresence(lm){
   const now=performance.now();
   let ok=false;
   if(vis(lm,[11,12,23,24])){
-    const hipX=(lm[23].x+lm[24].x)/2;
     const torso=Math.abs(((lm[23].y+lm[24].y)/2)-((lm[11].y+lm[12].y)/2));
-    ok = hipX>ZONE.x0 && hipX<ZONE.x1 && torso>ZONE.minTorso;
+    ok = bodyInZone(lm) && torso>ZONE.minTorso;
   }
   if(ok){
     if(!presenceStart)presenceStart=now;
