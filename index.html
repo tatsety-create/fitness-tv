@@ -209,16 +209,28 @@ function ema(prev,x,k=0.35){return prev==null?x:prev+(x-prev)*k}
 function vis(lm,ids){return ids.every(i=>lm[i]&&lm[i].visibility>0.5)}
 
 /* ---------------- active zone (защита от толпы) ---------------- */
-const ZONE={x0:0.32,x1:0.68,minTorso:0.18}; // узкая центральная зона; человек должен быть в ней целиком
-// весь корпус в зоне: оба плеча и оба бедра между линиями (защита от людей сбоку)
+const ZONE={x0:0.32,x1:0.68,minBody:0.30}; // центральная зона; порог по полному размеру тела в кадре
+// размер человека в кадре: плечи→щиколотки; если ноги не видны — оцениваем по торсу
+function bodySize(lm){
+  const shY=(lm[11].y+lm[12].y)/2, hipY=(lm[23].y+lm[24].y)/2;
+  const torso=Math.abs(hipY-shY);
+  const ankOK=lm[27]&&lm[28]&&lm[27].visibility>0.4&&lm[28].visibility>0.4;
+  if(ankOK){
+    const ankY=(lm[27].y+lm[28].y)/2;
+    return Math.abs(ankY-shY);
+  }
+  return torso*2.6; // торс ≈ 38% от «плечи-щиколотки» у любого роста
+}
+// человек должен помещаться в полосу целиком, не прижимаясь к её краям
+// (после обрезки кадра точки всегда внутри зоны, поэтому проверяем отступ от границ)
 function bodyInZone(lm){
+  const span=ZONE.x1-ZONE.x0, m=span*0.06;
   const xs=[lm[11].x,lm[12].x,lm[23].x,lm[24].x];
-  return Math.min(...xs)>ZONE.x0 && Math.max(...xs)<ZONE.x1;
+  return Math.min(...xs)>ZONE.x0+m && Math.max(...xs)<ZONE.x1-m;
 }
 function inZone(lm){
-  const torso=Math.abs(((lm[23].y+lm[24].y)/2)-((lm[11].y+lm[12].y)/2));
   if(!bodyInZone(lm)){hint('Встань в центр зоны — на разметку',true);return false}
-  if(torso<ZONE.minTorso){hint('Подойди ближе к экрану',true);return false}
+  if(bodySize(lm)<ZONE.minBody){hint('Подойди ближе к экрану',true);return false}
   return true;
 }
 function drawZone(){
@@ -245,7 +257,7 @@ function stepSquat(lm){
   const hipY=(lm[23].y+lm[24].y)/2, ankY=(lm[27].y+lm[28].y)/2;
   angleEMA=ema(angleEMA,ankY-hipY);              // видимая высота таза над стопами
   baseVal=Math.max(baseVal*0.998,angleEMA);      // автокалибровка «стоя»
-  if(baseVal<0.12)return hint('Встань прямо лицом к экрану');
+  if(baseVal<0.06)return hint('Встань прямо лицом к экрану');
   const r=angleEMA/baseVal;
   if(repState==='up'&&r<0.84){repState='down';hint('Отлично, теперь выпрямись!')}
   else if(repState==='down'&&r>0.94){repState='up';addRep()}
@@ -256,7 +268,7 @@ function stepBend(lm){
   const shY=(lm[11].y+lm[12].y)/2, hipY=(lm[23].y+lm[24].y)/2;
   angleEMA=ema(angleEMA,hipY-shY);               // видимая длина корпуса
   baseVal=Math.max(baseVal*0.998,angleEMA);
-  if(baseVal<0.1)return hint('Встань прямо лицом к экрану');
+  if(baseVal<0.05)return hint('Встань прямо лицом к экрану');
   const r=angleEMA/baseVal;
   if(repState==='up'&&r<0.74){repState='down';hint('Хорошо! Выпрямись полностью')}
   else if(repState==='down'&&r>0.9){repState='up';addRep()}
@@ -369,8 +381,7 @@ function checkPresence(lm){
   const now=performance.now();
   let ok=false;
   if(vis(lm,[11,12,23,24])){
-    const torso=Math.abs(((lm[23].y+lm[24].y)/2)-((lm[11].y+lm[12].y)/2));
-    ok = bodyInZone(lm) && torso>ZONE.minTorso;
+    ok = bodyInZone(lm) && bodySize(lm)>ZONE.minBody;
   }
   if(ok){
     if(!presenceStart)presenceStart=now;
@@ -478,10 +489,28 @@ $('again').onclick=()=>{
 /* ---------------- pose pipeline ---------------- */
 const pose=new Pose({locateFile:f=>`https://cdn.jsdelivr.net/npm/@mediapipe/pose/${f}`});
 pose.setOptions({modelComplexity:1,smoothLandmarks:true,minDetectionConfidence:0.5,minTrackingConfidence:0.5});
+
+// В модель уходит ТОЛЬКО полоса между пунктирными линиями:
+// люди за линиями физически не попадают на вход, поэтому фокус на них перескочить не может.
+const cropCv=document.createElement('canvas'), cropCtx=cropCv.getContext('2d');
+function sendCropped(){
+  const vw=video.videoWidth, vh=video.videoHeight;
+  if(!vw||!vh) return pose.send({image:video});
+  const sx=Math.round(vw*ZONE.x0), sw=Math.round(vw*(ZONE.x1-ZONE.x0));
+  cropCv.width=sw; cropCv.height=vh;
+  cropCtx.drawImage(video, sx,0,sw,vh, 0,0,sw,vh);
+  return pose.send({image:cropCv});
+}
+
 pose.onResults(res=>{
-  canvas.width=res.image.width;canvas.height=res.image.height;
-  ctx.drawImage(res.image,0,0);
-  const lm=res.poseLandmarks;
+  const vw=video.videoWidth||res.image.width, vh=video.videoHeight||res.image.height;
+  canvas.width=vw;canvas.height=vh;
+  ctx.drawImage(video,0,0,vw,vh);           // показываем полный кадр
+  // координаты из обрезанной полосы пересчитываем обратно в полный кадр
+  const span=ZONE.x1-ZONE.x0;
+  const lm=res.poseLandmarks
+    ? res.poseLandmarks.map(p=>({x:ZONE.x0+p.x*span, y:p.y, z:p.z, visibility:p.visibility}))
+    : null;
   if(lm){
     tracking=true;
     $('track').textContent='вижу тебя';$('track').className='pill ok';
@@ -512,7 +541,7 @@ $('go').onclick=async()=>{
   if(camStarted){awaitingStart=false;setPresenceUI(0,0);$('ovStart').classList.add('hide');startExercise(0);return}
   $('go').textContent='Загрузка…';
   try{
-    const camera=new Camera(video,{onFrame:async()=>{await pose.send({image:video})},width:1280,height:720});
+    const camera=new Camera(video,{onFrame:sendCropped,width:1280,height:720});
     await camera.start();
     camStarted=true;
     $('go').textContent='Начать сразу (без ожидания)';
